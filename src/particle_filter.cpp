@@ -19,6 +19,12 @@
 
 using namespace std;
 
+struct lesser {
+    bool operator()(const Particle& a, const Particle& b) {
+        return a.weight < b.weight;
+    }
+};
+
 void ParticleFilter::init(double x, double y, double theta, double std[]) {
 	// TODO: Set the number of particles. Initialize all particles to first position (based on estimates of 
 	//   x, y, theta and their uncertainties from GPS) and all weights to 1. 
@@ -62,8 +68,8 @@ void ParticleFilter::prediction(double delta_t, double std_pos[], double velocit
     std::normal_distribution<double> dist_theta(0, std_yaw);
 
     for (int i = 0; i < num_particles; i++) {
-        Particle p = particles[i];
-        if (fabs(yaw_rate - 0.0001) > 0) {
+        Particle &p = particles[i]; // Be careful to use reference, if not, it will be a new particle
+        if (fabs(yaw_rate) - 0.0001 > 0) {
             p.x = p.x + (velocity / yaw_rate) * (sin(p.theta + yaw_rate * delta_t) - sin(p.theta)) + dist_x(gen);
             p.y = p.y + (velocity / yaw_rate) * (cos(p.theta) - cos(p.theta + yaw_rate * delta_t)) + dist_y(gen);
             p.theta = p.theta + yaw_rate * delta_t + dist_theta(gen);
@@ -111,29 +117,35 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
 	    for (auto &obs: observations) {
 	        LandmarkObs newObs;
 	        // Transform from car coordinate to map coordinate
+	        newObs.id = 1; // Some dummy landmark id
 	        newObs.x = particle.x + obs.x * cos(particle.theta) - sin(particle.theta) * obs.y;
 	        newObs.y = particle.y + obs.x * sin(particle.theta) + cos(particle.theta) * obs.y;
 	        transformedObs.push_back(newObs);
 	    }
+	    vector<Map::single_landmark_s> filteredLandmarks;
+	    for (auto &landmark: map_landmarks.landmark_list) {
+	        if (dist(landmark.x_f, landmark.y_f, particle.x, particle.y) < sensor_range) {
+	            filteredLandmarks.push_back(landmark);
+	        }
+	    }
         // associate each observation to closest landmark for each particle
-        dataAssociation(map_landmarks.landmark_list, transformedObs);
+        dataAssociation(filteredLandmarks, transformedObs);
 
         // retrieve associations, sense_x, sense_y, calculate weight for this particle
         double prob = 1.0;
+        const double sigma_x = std_landmark[0];
+        const double sigma_y = std_landmark[1];
+        const double norm = 1 / (2 * M_PI * sigma_x * sigma_y);
         vector<int> associations;
         vector<double> sense_x, sense_y;
         for (auto &obs: transformedObs) {
             associations.push_back(obs.id);
             const double x_obs = obs.x;
             const double y_obs = obs.y;
-            const double sigma_x = std_landmark[0];
-            const double sigma_y = std_landmark[1];
             const double x_mu = map_landmarks.landmark_list[obs.id-1].x_f; // assuming index of landmark_list == landmarkId
             const double y_mu = map_landmarks.landmark_list[obs.id-1].y_f;
             // multivariate gaussian
-            const double norm = 1 / (2 * M_PI * sigma_x * sigma_y);
             const double exponent = (((x_obs - x_mu) * (x_obs - x_mu)) / (2 * sigma_x * sigma_x)) + (((y_obs - y_mu) * (y_obs - y_mu)) / (2 * sigma_y * sigma_y));
-            cout << "exponent " << exponent << endl;
             prob *= norm * exp(-exponent);
             sense_x.push_back(x_obs);
             sense_y.push_back(y_obs);
@@ -143,11 +155,11 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
 
         SetAssociations(particle, associations, sense_x, sense_y);
 	}
-    cout << "SUM OF WEIGHTS" << sumOfWeights << endl;
 	for (int i = 0; i < particles.size(); ++i) {
-        particles[i].weight /= sumOfWeights;
-        weights[i] = particles[i].weight;
-        // cout << "weights " << weights[i] << endl;
+        if (sumOfWeights > 0) {
+            particles[i].weight /= sumOfWeights;
+            weights[i] = particles[i].weight;
+        }
     }
 }
 
@@ -168,9 +180,10 @@ void ParticleFilter::resample() {
         new_p.y = particles[random_int].y;
         new_p.theta = particles[random_int].theta;
         new_p.weight = particles[random_int].weight;
-        new_p.associations = particles[random_int].associations;
-        new_p.sense_x = particles[random_int].sense_x;
-        new_p.sense_y = particles[random_int].sense_y;
+        SetAssociations(new_p, particles[random_int].associations, particles[random_int].sense_x, particles[random_int].sense_y);
+        // new_p.associations = particles[random_int].associations;
+        // new_p.sense_x = particles[random_int].sense_x;
+        // new_p.sense_y = particles[random_int].sense_y;
         temp.push_back(new_p);
 	}
     particles = temp;
